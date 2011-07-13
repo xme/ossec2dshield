@@ -18,6 +18,7 @@ use Net::SMTP;
 my $version	= "1.0";
 my @months	= ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
 		   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec");
+my @records;
 my $counter	= 0;
 my $body	= "";
 my $tz;
@@ -162,17 +163,23 @@ while(<FWDATA>)
 					$dstip =~ s/^(\d+)\./10\./;
 				}
 
-				# TODO:
-				# At the moment, we do not count duplicate entries
-				# Count is hardcoded as "1"
-				$body = $body . sprintf "%s\t%s\t%d\t%s\t%d\t%s\t%d\t%s\n",
-					$timestamp,
-					$userid,
-					1,
-					$srcip, $srcport,
-					$dstip, $dstport,
-					$proto;
-				$counter++;
+				# Process the line only if it's a new one
+				my $element = $srcip.$srcport.$dstip.$dstport;
+				if (!grep {$_ eq $element} @records) {
+					# TODO:
+					# At the moment, we do not count duplicate entries
+					# Count is hardcoded as "1"
+					$body = $body . sprintf "%s\t%s\t%d\t%s\t%d\t%s\t%d\t%s\n",
+						$timestamp,
+						$userid,
+						1,
+						$srcip, $srcport,
+						$dstip, $dstport,
+						$proto;
+
+					push(@records, $srcip.$srcport.$dstip.$dstport);
+					$counter++;
+				}
 			}
 		}
 	}
@@ -189,7 +196,7 @@ if (!$test && $counter > 0) {
 	$debug && print "Sending e-mail.\n";
 	my $smtp = Net::SMTP->new($mtaip);
 	$smtp->mail("$from");
-	# $smtp->to("test\@dshield.org");
+	# $smtp->to("report\@dshield.org");
 	$smtp->to("xavier\@rootshell.be");
 	$smtp->data();
 	my $buffer = "To: xavier\@rootshell.be\n" .
