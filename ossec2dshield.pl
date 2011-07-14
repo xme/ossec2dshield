@@ -2,11 +2,14 @@
 #
 # ossec2dshield.pl - Script to submit OSSEC firewall logs to dshield.org
 # 
+# Contact: xavier(at)rootshell(dot)be
+# 
 # Note: Dhield format spec available at: http://www.dshield.org/specs.html
 #
 # History
 # -------
 # 2011/07/13	Created
+# 2011/07/14	Added filter for ports
 #
 
 use strict;
@@ -32,6 +35,7 @@ my $newtimestamp;
 my $obfuscate;
 my $test;
 my ($mta, $mtaaddr, $mtaip, $from);
+my $portslist;
 
 # Command line options
 my $result = GetOptions(
@@ -40,6 +44,7 @@ my $result = GetOptions(
 		"log=s"		=> \$fwlog,
 		"userid=s"	=> \$userid,
 		"statefile=s"	=> \$statefile,
+		"ports=s"	=> \$portslist,
 		"obfuscate"	=> \$obfuscate,
 		"test"		=> \$test,
 		"from=s"	=> \$from,
@@ -54,15 +59,16 @@ if ($help) {
 Usage: $0 --log=file --userid=dshieldid --statefile=file --from=email --mta=hostname
 		[--help] [--debug] [--test] [--obfusctate]
 Where:
---help			: This help
---debug			: Display processing details to stdout
---test			: Test only, do not mail the info to dshield.org
---obfuscate		: Obfuscate the destination address (10.x.x.x)
---log=file		: Your OSSEC firewall.log
---userid=dshieldid	: Your dshield.org UserID (see http://www.dshield.org)
---statefile=file	: File to write the state of log processing
---from=email		: Your e-mail address (From:)
---mta=hostname		: Your Mail Transfer Agent (to send mail to dshield.org)
+--help		 	 : This help
+--debug			 : Display processing details to stdout
+--test		 	 : Test only, do not mail the info to dshield.org
+--obfuscate		 : Obfuscate the destination address (10.x.x.x)
+--ports=port1,!port2,... : Filter destination ports ex: !25,!80,445,53
+--log=file		 : Your OSSEC firewall.log
+--userid=dshieldid	 : Your dshield.org UserID (see http://www.dshield.org)
+--statefile=file	 : File to write the state of log processing
+--from=email		 : Your e-mail address (From:)
+--mta=hostname		 : Your Mail Transfer Agent (to send mail to dshield.org)
 _HELP_
 	exit 0
 }
@@ -78,6 +84,8 @@ my $tzh = substr($tz,0, 3);
 my $tzm = substr($tz,3, 2);
 $tz = sprintf "%s:%s", $tzh, $tzm;
 $debug && print "Host timezone: $tz.\n";
+
+($debug && $portslist ne "") && print "Ports Filter: $portslist.\n";
 
 #
 # We must have a dshield UserID
@@ -150,6 +158,10 @@ while(<FWDATA>)
 		$newtimestamp = sprintf "%04d%02d%02d%02d%02d%02d",
 					$1, $month, $3, $4, $5, $6;
 
+		if ($portslist ne "" && ProcessPort($dstport) == 0) {
+			next;
+		}
+
 		# TODO:
 		# Check if we have correct IPv4 addresses
 		# To support IPv6?
@@ -196,8 +208,7 @@ if (!$test && $counter > 0) {
 	$debug && print "Sending e-mail.\n";
 	my $smtp = Net::SMTP->new($mtaip);
 	$smtp->mail("$from");
-	# $smtp->to("report\@dshield.org");
-	$smtp->to("xavier\@rootshell.be");
+	$smtp->to("report\@dshield.org");
 	$smtp->data();
 	my $buffer = "To: xavier\@rootshell.be\n" .
 			"Subject: FORMAT DSHIELD USERID $userid TZ $tz OSSEC2dshield $version\n\n" .
@@ -220,3 +231,33 @@ else {
 $debug && print "File processed. $counter record(s) processed.\n";
 
 exit 0;
+
+sub ProcessPort() {
+	my $dstport = shift;
+	my @ports = split(",", $portslist);
+	my $found=0;
+	my ($port, $port2);
+	foreach $port(@ports) {
+		if (index($port, "!") == -1) {
+			($port < 1 || $port > 65535) && die "Invalid port filter: $port";
+			if ($dstport eq $port) {
+				$found=1;
+				last;
+			}
+		}
+		else {
+			$port2 = substr($port,1);
+			($port2 < 1 || $port2 > 65535) && die "Invalid port filter: $port";
+			if ($dstport ne $port2) {
+				$found=1;
+			}
+			else {
+				$found=0;
+				last;
+			}
+		}
+	}
+	return($found);
+}
+
+# Eof
