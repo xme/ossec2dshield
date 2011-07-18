@@ -10,6 +10,7 @@
 # -------
 # 2011/07/13	Created
 # 2011/07/14	Added filter for ports
+# 2011/07/17	Added logging results to a log file
 #
 
 use strict;
@@ -18,7 +19,7 @@ use Socket;
 use Getopt::Long;
 use Net::SMTP;
 
-my $version	= "1.0";
+my $version	= "1.1";
 my @months	= ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
 		   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec");
 my @records;
@@ -28,6 +29,7 @@ my $tz;
 my $debug;
 my $help;
 my $fwlog;
+my $logfile;
 my $userid;
 my $statefile;
 my $lasttimestamp;
@@ -41,9 +43,10 @@ my $portslist;
 my $result = GetOptions(
 		"debug"		=> \$debug,
 		"help"		=> \$help,
-		"log=s"		=> \$fwlog,
+		"file=s"	=> \$fwlog,
 		"userid=s"	=> \$userid,
 		"statefile=s"	=> \$statefile,
+		"log=s"		=> \$logfile,
 		"ports=s"	=> \$portslist,
 		"obfuscate"	=> \$obfuscate,
 		"test"		=> \$test,
@@ -56,17 +59,19 @@ my $result = GetOptions(
 #
 if ($help) {
 	print <<_HELP_;
-Usage: $0 --log=file --userid=dshieldid --statefile=file --from=email --mta=hostname
+Usage: $0 --file=fwlogs --userid=dshieldid --statefile=file --log=logfile
+		--from=email --mta=hostname
 		[--help] [--debug] [--test] [--obfusctate]
 Where:
 --help		 	 : This help
 --debug			 : Display processing details to stdout
---test		 	 : Test only, do not mail the info to dshield.org
+--test		 	 : Test only, do not mail data to dshield.org
 --obfuscate		 : Obfuscate the destination address (10.x.x.x)
 --ports=port1,!port2,... : Filter destination ports ex: !25,!80,445,53
---log=file		 : Your OSSEC firewall.log
+--file=fwlogs		 : Your OSSEC firewall.log
 --userid=dshieldid	 : Your dshield.org UserID (see http://www.dshield.org)
 --statefile=file	 : File to write the state of log processing
+--log=logfile            : Log script results to logfile
 --from=email		 : Your e-mail address (From:)
 --mta=hostname		 : Your Mail Transfer Agent (to send mail to dshield.org)
 _HELP_
@@ -79,7 +84,10 @@ $debug && print "Running in debug mode.\n";
 # Get the system timezone (referenced to GMT)
 # Format requested by dshield.org: [+-]HH:MM
 #
-(($tz = strftime("%z", localtime())) eq "") && die "Cannot get the host timezone";
+if (($tz = strftime("%z", localtime())) eq "") {
+	WriteLog("Cannot get the host timezone", 1);
+	exit 1;
+}
 my $tzh = substr($tz,0, 3);
 my $tzm = substr($tz,3, 2);
 $tz = sprintf "%s:%s", $tzh, $tzm;
@@ -90,7 +98,10 @@ $debug && print "Host timezone: $tz.\n";
 #
 # We must have a dshield UserID
 #
-($userid eq "") && die "No Dshield user ID provided";
+if ($userid eq "") {
+	WriteLog("No Dshield user ID provided", 1);
+	exit 1;
+}
 $debug && print "Using DShield UserID: $userid.\n";
 
 ($obfuscate && $debug) && print "Targe IP addresses will be obfuscated.\n";
@@ -98,14 +109,21 @@ $debug && print "Using DShield UserID: $userid.\n";
 #
 # Check the provided e-mail address
 #
-($from eq "") && die "No e-mail address provided";
-($from =~ /[\w-]+@([\w-]+\.)+[\w-]+/) || die "Incorrect e-mail format";
+if ($from eq "" ||
+    !($from =~ /[\w-]+@([\w-]+\.)+[\w-]+/)) {
+	WriteLog("No e-mail or incorrect e-mail address provided\n", 1);
+	exit 1;
+}
 
 #
 # Check the provided MTA
 #
-($mta eq "") && die "No MTA provided";
-(!($mtaaddr = inet_aton($mta))) && die "Cannot resolve $mta";
+if ($mta eq "" ||
+    !($mtaaddr = inet_aton($mta))) {
+	WriteLog("No MTA or cannot resolve MTA.\n", 1);
+	exit 1;
+}
+
 $mtaip = inet_ntoa($mtaaddr);
 $debug && print "Using MTA: $mtaip.\n";
 
@@ -128,7 +146,10 @@ else {
 #
 # Read the OSSEC firewall log
 #
-open(FWDATA, "$fwlog") || die "Cannot open/read firewall logs";
+if (!open(FWDATA, "$fwlog")) {
+	WriteLog("Cannot open/read firewall logs.\n", 1);
+	exit 1;
+}
 while(<FWDATA>) 
 {
 	my $line = $_;
@@ -216,19 +237,20 @@ if (!$test && $counter > 0) {
 	$smtp->datasend($buffer);
 	$smtp->dataend();
 	$smtp->quit();
-}
 
-# Save the last timestamp
-if (open(STATE, ">$statefile")) {
-	print STATE $newtimestamp . "\n";
-	close(STATE);
-	$debug && print "Saved timestamp: $newtimestamp.\n";
-}
-else {
-	die "Cannot save the current timestamp";
+	# Save the last timestamp
+	if (open(STATE, ">$statefile")) {
+		print STATE $newtimestamp . "\n";
+		close(STATE);
+		$debug && print "Saved timestamp: $newtimestamp.\n";
+	}
+	else {
+		WriteLog("Cannot save the current timestamp\n", 1);
+	}
 }
 
 $debug && print "File processed. $counter record(s) processed.\n";
+WriteLog("File processed. $counter record(s) sent to dshield.org\n",0);
 
 exit 0;
 
@@ -239,7 +261,10 @@ sub ProcessPort() {
 	my ($port, $port2);
 	foreach $port(@ports) {
 		if (index($port, "!") == -1) {
-			($port < 1 || $port > 65535) && die "Invalid port filter: $port";
+			if ($port < 1 || $port > 65535) {
+				WriteLog("Invalid port filter: $port\n", 1);
+				exit 1;
+			}
 			if ($dstport eq $port) {
 				$found=1;
 				last;
@@ -247,7 +272,10 @@ sub ProcessPort() {
 		}
 		else {
 			$port2 = substr($port,1);
-			($port2 < 1 || $port2 > 65535) && die "Invalid port filter: $port";
+			if ($port2 < 1 || $port2 > 65535) {
+				WriteLog("Invalid port filter: $port\n", 1);
+				exit 1;
+			}
 			if ($dstport ne $port2) {
 				$found=1;
 			}
@@ -258,6 +286,26 @@ sub ProcessPort() {
 		}
 	}
 	return($found);
+}
+
+sub WriteLog() {
+	my $msg = shift;
+	my $console = shift;
+	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+
+	if ($console) {
+		print $msg;
+	}
+
+	if ($logfile && open(LOGFILE, ">>$logfile")) {
+		printf LOGFILE "[%04d/%02d/%02d %02d:%02d:%02d] %s", 
+			$year+1900, $mon+1, $mday, $hour, $min, $sec, $msg;
+		close(LOGFILE);
+	}
+	else {
+		print "ERROR: Cannot write logfile $logfile: $!\n";
+		exit 1;
+	}
 }
 
 # Eof
