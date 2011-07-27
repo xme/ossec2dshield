@@ -11,6 +11,7 @@
 # 2011/07/13	Created
 # 2011/07/14	Added filter for ports
 # 2011/07/17	Added logging results to a log file
+# 2011/07/27	Added support for duplicate events (counter > 1)
 #
 
 use strict;
@@ -19,12 +20,14 @@ use Socket;
 use Getopt::Long;
 use Net::SMTP;
 
-my $version	= "1.1";
+my $version	= "1.2";
 my @months	= ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
 		   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec");
-my @records;
+my %records;
+my $key;
+my $i;
+
 my $counter	= 0;
-my $body	= "";
 my $tz;
 my $debug;
 my $help;
@@ -196,22 +199,24 @@ while(<FWDATA>)
 					$dstip =~ s/^(\d+)\./10\./;
 				}
 
-				# Process the line only if it's a new one
-				my $element = $srcip.$srcport.$dstip.$dstport;
-				if (!grep {$_ eq $element} @records) {
-					# TODO:
-					# At the moment, we do not count duplicate entries
-					# Count is hardcoded as "1"
-					$body = $body . sprintf "%s\t%s\t%d\t%s\t%d\t%s\t%d\t%s\n",
-						$timestamp,
-						$userid,
-						1,
-						$srcip, $srcport,
-						$dstip, $dstport,
-						$proto;
-
-					push(@records, $srcip.$srcport.$dstip.$dstport);
+				# Process the firewall event
+				# Generate a unique key
+				$key = $srcip.$srcport.$dstip.$dstport.$proto;
+				if (! $records{$key}) {
+					# New line: insert a new record
+					my @newrecord = ( $timestamp,
+							  $userid,
+							  1,
+							  $srcip, $srcport,
+							  $dstip, $dstport,
+							  $proto );
+					$records{$key} = [ @newrecord ];
 					$counter++;
+				}
+				else {
+					# Record already exists, update counter & timestamp
+					$records{$key}[0] = $timestamp;
+					$records{$key}[2] ++;
 				}
 			}
 		}
@@ -220,18 +225,36 @@ while(<FWDATA>)
 }
 close(FWDATA);
 
-$debug && print $body;
+if ($debug) {
+	for $key ( keys %records) {
+		for $i (0 .. $#{ $records{$key} } ) {
+			($i > 0) && print "\t";
+			print $records{$key}[$i];
+		}
+		print "\n";
+	}
+}
 
 #
 # Send data to dshield (only of we have valid data)
 #
 if (!$test && $counter > 0) {
 	$debug && print "Sending e-mail.\n";
+	my $body = "";
 	my $smtp = Net::SMTP->new($mtaip);
+
 	$smtp->mail("$from");
 	$smtp->to("report\@dshield.org");
 	$smtp->data();
-	my $buffer = "To: xavier\@rootshell.be\n" .
+	# Populate the mail body with our records
+	for $key ( keys %records) {
+		for $i (0 .. $#{ $records{$key} } ) {
+			if ($i > 0) { $body = $body . "\t"; }
+			$body = $body . $records{$key}[$i];
+		}
+		$body = $body . "\n";
+	}
+	my $buffer = "To: report\@dshield.org\n" .
 			"Subject: FORMAT DSHIELD USERID $userid TZ $tz OSSEC2dshield $version\n\n" .
 			$body;
 	$smtp->datasend($buffer);
