@@ -1,0 +1,6 @@
+This Perl script is a simple feeder for dshield.org.
+It collects firewall logs stored on an OSSEC server and send them to dshield.
+More information is available here:
+http://blog.rootshell.be/2011/07/15/feeding-dshield-with-ossec-logs/
+
+Xavier (@xme)
