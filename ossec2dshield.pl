@@ -12,6 +12,7 @@
 # 2011/07/14	Added filter for ports
 # 2011/07/17	Added logging results to a log file
 # 2011/07/27	Added support for duplicate events (counter > 1)
+# 2015/06/01	Added command line switch to drop RFC1918 source IP addresses
 #
 
 use strict;
@@ -20,7 +21,7 @@ use Socket;
 use Getopt::Long;
 use Net::SMTP;
 
-my $version	= "1.2";
+my $version	= "1.3";
 my @months	= ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
 		   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec");
 my %records;
@@ -41,6 +42,7 @@ my $obfuscate;
 my $test;
 my ($mta, $mtaaddr, $mtaip, $from);
 my $portslist;
+my $norfc1918;
 
 # Command line options
 my $result = GetOptions(
@@ -54,7 +56,8 @@ my $result = GetOptions(
 		"obfuscate"	=> \$obfuscate,
 		"test"		=> \$test,
 		"from=s"	=> \$from,
-		"mta=s"		=> \$mta
+		"mta=s"		=> \$mta,
+		"norfc1918"	=> \$norfc1918
 );
 
 #
@@ -64,12 +67,13 @@ if ($help) {
 	print <<_HELP_;
 Usage: $0 --file=fwlogs --userid=dshieldid --statefile=file --log=logfile
 		--from=email --mta=hostname
-		[--help] [--debug] [--test] [--obfusctate]
+		[--help] [--debug] [--test] [--obfusctate] [--norfc1918]
 Where:
 --help		 	 : This help
 --debug			 : Display processing details to stdout
 --test		 	 : Test only, do not mail data to dshield.org
 --obfuscate		 : Obfuscate the destination address (10.x.x.x)
+--norfc1918              : Skip RFC1918 source IP addresses
 --ports=port1,!port2,... : Filter destination ports ex: !25,!80,445,53
 --file=fwlogs		 : Your OSSEC firewall.log
 --userid=dshieldid	 : Your dshield.org UserID (see http://www.dshield.org)
@@ -107,7 +111,8 @@ if ($userid eq "") {
 }
 $debug && print "Using DShield UserID: $userid.\n";
 
-($obfuscate && $debug) && print "Targe IP addresses will be obfuscated.\n";
+($obfuscate && $debug) && print "Target IP addresses will be obfuscated.\n";
+($norfc1918 && $debug) && print "RFC1918 source IP addresses will be dropped.\n";
 
 #
 # Check the provided e-mail address
@@ -191,32 +196,37 @@ while(<FWDATA>)
 		# To support IPv6?
 		if ($srcip =~ /\d+\.\d+\.\d+\.\d+/ && $dstip =~ /\d+\.\d+\.\d+\.\d+/) {
 
-	 		# Do not process line already parsed (based on the timestamp)
-			if ($newtimestamp > $lasttimestamp) {
+			# Skip RFC1918 source IP addresses
+			if ($norfc1918 &&
+			    $srcip !~ /(^127\.0\.0\.1)|(^10\.)|(^172\.1[6-9]\.)|(^172\.2[0-9]\.)|(^172\.3[0-1]\.)|(^192\.168\.)/) {
 
-				# Obfuscate destination IP address
-				if ($obfuscate) {
-					$dstip =~ s/^(\d+)\./10\./;
-				}
+	 			# Do not process line already parsed (based on the timestamp)
+				if ($newtimestamp > $lasttimestamp) {
 
-				# Process the firewall event
-				# Generate a unique key
-				$key = $srcip.$srcport.$dstip.$dstport.$proto;
-				if (! $records{$key}) {
-					# New line: insert a new record
-					my @newrecord = ( $timestamp,
-							  $userid,
-							  1,
-							  $srcip, $srcport,
-							  $dstip, $dstport,
-							  $proto );
-					$records{$key} = [ @newrecord ];
-					$counter++;
-				}
-				else {
-					# Record already exists, update counter & timestamp
-					$records{$key}[0] = $timestamp;
-					$records{$key}[2] ++;
+					# Obfuscate destination IP address
+					if ($obfuscate) {
+						$dstip =~ s/^(\d+)\./10\./;
+					}	
+
+					# Process the firewall event
+					# Generate a unique key
+					$key = $srcip.$srcport.$dstip.$dstport.$proto;
+					if (! $records{$key}) {
+						# New line: insert a new record
+						my @newrecord = ( $timestamp,
+								  $userid,
+								  1,
+								  $srcip, $srcport,
+								  $dstip, $dstport,
+								  $proto );
+						$records{$key} = [ @newrecord ];
+						$counter++;
+					}
+					else {
+						# Record already exists, update counter & timestamp
+						$records{$key}[0] = $timestamp;
+						$records{$key}[2] ++;
+					}
 				}
 			}
 		}
