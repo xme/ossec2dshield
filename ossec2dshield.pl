@@ -175,7 +175,7 @@ while(<FWDATA>)
 		my $timestamp	= sprintf "%4d-%02d-%02d %02d:%02d:%02d %s",
 					$1, $month, $3, $4, $5, $6, $tz;
 		my $proto	= $7;
-		if ($proto ne "TCP" && $proto ne "UDP") {
+		if ($proto ne "TCP" && $proto ne "tcp" && $proto ne "UDP" && $proto ne "udp") {
 			$proto = "???";
 		}
 
